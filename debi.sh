@@ -228,6 +228,7 @@ install_recommends=true
 install='ca-certificates libpam-systemd'
 upgrade=
 kernel_params=
+force_lowmem=
 bbr=false
 ssh_port=
 hold=false
@@ -347,6 +348,11 @@ while [ $# -gt 0 ]; do
             ;;
         --no-part|--no-disk-partitioning)
             disk_partitioning=false
+            ;;
+        --force-lowmem)
+            [ "$2" != 0 ] && [ "$2" != 1 ] && [ "$2" != 2 ] && err 'Low memory level can only be 0, 1 or 2'
+            force_lowmem=$2
+            shift
             ;;
         --disk)
             disk=$2
@@ -628,13 +634,13 @@ d-i time/zone string $timezone
 d-i clock-setup/utc boolean true
 d-i clock-setup/ntp boolean true
 d-i clock-setup/ntp-server string $ntp
+
+# Partitioning
+
 EOF
 
 [ "$disk_partitioning" = true ] && {
     $save_preseed << 'EOF'
-
-# Partitioning
-
 d-i partman-auto/method string regular
 EOF
     if [ -n "$disk" ]; then
@@ -643,14 +649,16 @@ EOF
         # shellcheck disable=SC2016
         echo 'd-i partman/early_command string debconf-set partman-auto/disk "$(list-devices disk | head -n 1)"' | $save_preseed
     fi
+}
 
-    [ "$force_gpt" = true ] && {
-        $save_preseed << 'EOF'
+[ "$force_gpt" = true ] && {
+    $save_preseed << 'EOF'
 d-i partman-partitioning/choose_label string gpt
 d-i partman-partitioning/default_label string gpt
 EOF
-    }
+}
 
+[ "$disk_partitioning" = true ] && {
     echo "d-i partman/default_filesystem string $filesystem" | $save_preseed
 
     [ -z "$efi" ] && {
@@ -745,8 +753,13 @@ popularity-contest popularity-contest/participate boolean false
 
 # Boot loader installation
 
-d-i grub-installer/bootdev string default
 EOF
+
+if [ -n "$disk" ]; then
+    echo "d-i grub-installer/bootdev string $disk" | $save_preseed
+else
+    echo 'd-i grub-installer/bootdev string default' | $save_preseed
+fi
 
 [ "$force_efi_extra_removable" = true ] && echo 'd-i grub-installer/force-efi-extra-removable boolean true' | $save_preseed
 [ -n "$kernel_params" ] && echo "d-i debian-installer/add-kernel-opts string$kernel_params" | $save_preseed
@@ -808,12 +821,16 @@ EOF
 }
 
 mkrelpath=$installer_directory
+[ "$dry_run" = true ] && mkrelpath=/boot
 installer_directory=$(grub-mkrelpath "$mkrelpath" 2> /dev/null) ||
 installer_directory=$(grub2-mkrelpath "$mkrelpath" 2> /dev/null) || {
     err 'Could not find "grub-mkrelpath" or "grub2-mkrelpath" command'
 }
+[ "$dry_run" = true ] && installer_directory="$installer_directory/debian-$suite"
 
 kernel_params="$kernel_params lowmem/low=1"
+
+[ -n "$force_lowmem" ] && kernel_params="$kernel_params lowmem=+$force_lowmem"
 
 initrd="$installer_directory/initrd.gz"
 [ "$firmware" = true ] && initrd="$initrd $installer_directory/firmware.cpio.gz"
